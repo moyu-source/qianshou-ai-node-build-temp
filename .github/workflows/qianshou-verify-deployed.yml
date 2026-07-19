@@ -1,0 +1,80 @@
+name: Verify Deployed Qianshou First Installer
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      FIRST_INSTALLER_URL: https://xz.178u.cn/download/QianshouOpenClaw-FirstInstall-x64.exe
+      FIRST_INSTALLER_SHA256: b9c318d4a0598023be424ec1e830de6345b1fe10765a4d6435edc7ba9d7ce99c
+      SIGNER_THUMBPRINT: 00D4DA0FA02E12001900DCCD4B938F68A5613DE5
+      ROOT_THUMBPRINT: C96262AE2D3D99B2F322FFF52C1C645B9482BD98
+
+    steps:
+      - name: Download exact deployed first installer
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "QianshouOpenClaw-FirstInstall-x64.exe"
+          Invoke-WebRequest -Uri $env:FIRST_INSTALLER_URL -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+          if ($actual -ne $env:FIRST_INSTALLER_SHA256) {
+            throw "Deployed first-installer hash mismatch: $actual"
+          }
+
+      - name: Verify signer and timestamp before trust installation
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "QianshouOpenClaw-FirstInstall-x64.exe"
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if (-not $signature.SignerCertificate) {
+            throw "The first installer has no Authenticode signer."
+          }
+          if ($signature.SignerCertificate.Thumbprint -ne $env:SIGNER_THUMBPRINT) {
+            throw "Unexpected first-installer signer: $($signature.SignerCertificate.Thumbprint)"
+          }
+          if (-not $signature.TimeStamperCertificate) {
+            throw "The first installer has no trusted timestamp."
+          }
+          if ($signature.Status -in @("HashMismatch", "NotSigned", "NotSupported")) {
+            throw "Invalid first-installer signature envelope: $($signature.Status)"
+          }
+
+      - name: Run the real deployed one-click installer
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "QianshouOpenClaw-FirstInstall-x64.exe"
+          $process = Start-Process -FilePath $installer -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART"
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Deployed first installer exited with code $($process.ExitCode)."
+          }
+
+      - name: Verify installed application and trust chain
+        shell: pwsh
+        run: |
+          $tray = Join-Path $env:LOCALAPPDATA "QianshouAINode\OpenClaw.Tray.WinUI.exe"
+          if (-not (Test-Path -LiteralPath $tray)) {
+            throw "Installed tray application was not found."
+          }
+          $root = Get-ChildItem Cert:\LocalMachine\Root | Where-Object Thumbprint -eq $env:ROOT_THUMBPRINT
+          $publisher = Get-ChildItem Cert:\LocalMachine\TrustedPublisher | Where-Object Thumbprint -eq $env:SIGNER_THUMBPRINT
+          if (-not $root -or -not $publisher) {
+            throw "The one-click installer did not establish the internal trust chain."
+          }
+          $installer = Join-Path $env:RUNNER_TEMP "QianshouOpenClaw-FirstInstall-x64.exe"
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne "Valid") {
+            throw "Signature is not valid after trust installation: $($signature.Status)"
+          }

@@ -42,6 +42,8 @@ jobs:
           git config user.email "qianshou-build@users.noreply.github.com"
           git add -A
           git commit -m "build: verified source snapshot"
+          git rm -r -f .
+          git reset --hard HEAD
 
       - name: Publish checkout progress
         shell: pwsh

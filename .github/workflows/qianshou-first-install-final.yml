@@ -40,6 +40,21 @@ jobs:
           }
           tar -xzf $archive -C $env:GITHUB_WORKSPACE
 
+      - name: Enforce one-click inner installation
+        shell: pwsh
+        run: |
+          $issPath = Join-Path $PWD "packaging\first-install\installer-first-run.iss"
+          $iss = Get-Content -Raw -LiteralPath $issPath
+          $old = 'Filename: "{tmp}\QianshouOpenClaw-Setup-x64.exe"; Description: "安装千手观音OpenClaw"; StatusMsg: "内部信任已建立，正在安装千手观音OpenClaw……"; Flags: waituntilterminated runasoriginaluser'
+          $new = @'
+          Filename: "{tmp}\QianshouOpenClaw-Setup-x64.exe"; Parameters: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=""startupicon"""; Description: "安装千手观音OpenClaw"; StatusMsg: "内部信任已建立，正在安装千手观音OpenClaw……"; Flags: waituntilterminated runasoriginaluser
+          Filename: "{localappdata}\QianshouAINode\OpenClaw.Tray.WinUI.exe"; Description: "启动千手观音OpenClaw"; Flags: nowait postinstall skipifsilent runasoriginaluser
+          '@
+          if (-not $iss.Contains($old)) {
+            throw "The first-installer run contract was not found."
+          }
+          Set-Content -LiteralPath $issPath -Value $iss.Replace($old, $new.Trim()) -Encoding utf8
+
       - name: Download and verify signed core installer
         shell: pwsh
         run: |

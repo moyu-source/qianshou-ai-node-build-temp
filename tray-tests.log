@@ -1,0 +1,27 @@
+  OpenClaw.Shared -> D:\a\qianshou-ai-node-build-temp\qianshou-ai-node-build-temp\src\OpenClaw.Shared\bin\Debug\net10.0\OpenClaw.Shared.dll
+  OpenClaw.Connection -> D:\a\qianshou-ai-node-build-temp\qianshou-ai-node-build-temp\src\OpenClaw.Connection\bin\Debug\net10.0\OpenClaw.Connection.dll
+  OpenClaw.Tray.Tests -> D:\a\qianshou-ai-node-build-temp\qianshou-ai-node-build-temp\tests\OpenClaw.Tray.Tests\bin\Debug\net10.0\OpenClaw.Tray.Tests.dll
+Test run for D:\a\qianshou-ai-node-build-temp\qianshou-ai-node-build-temp\tests\OpenClaw.Tray.Tests\bin\Debug\net10.0\OpenClaw.Tray.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:01.64]     OpenClaw.Tray.Tests.ConnectionRegressionSourceTests.SetupCodeEntry_ClearsStaleSshTunnelFields [FAIL]
+  Failed OpenClaw.Tray.Tests.ConnectionRegressionSourceTests.SetupCodeEntry_ClearsStaleSshTunnelFields [14 ms]
+  Error Message:
+   Assert.Contains() Failure: Sub-string not found
+String:    "using Microsoft.UI.Xaml;\nusing Microsoft."···
+Not found: "ClearAddGatewaySshFields();\r\n        Show"···
+  Stack Trace:
+     at OpenClaw.Tray.Tests.ConnectionRegressionSourceTests.SetupCodeEntry_ClearsStaleSshTunnelFields() in D:\a\qianshou-ai-node-build-temp\qianshou-ai-node-build-temp\tests\OpenClaw.Tray.Tests\ConnectionRegressionSourceTests.cs:line 64
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+[xUnit.net 00:00:05.25]     OpenClaw.Tray.Tests.DiagnosticsPageContractTests.DebugPage_CopySpecificCards_HaveCopyGlyph_NotChevron_AndFeedback [FAIL]
+  Failed OpenClaw.Tray.Tests.DiagnosticsPageContractTests.DebugPage_CopySpecificCards_HaveCopyGlyph_NotChevron_AndFeedback [8 ms]
+  Error Message:
+   Assert.Contains() Failure: Sub-string not found
+String:    "using Microsoft.UI.Xaml;\nusing Microsoft."···
+Not found: "CopyDiagnosticText(\r\n            "Summary"···
+  Stack Trace:
+     at OpenClaw.Tray.Tests.DiagnosticsPageContractTests.DebugPage_CopySpecificCards_HaveCopyGlyph_NotChevron_AndFeedback() in D:\a\qianshou-ai-node-build-temp\qianshou-ai-node-build-temp\tests\OpenClaw.Tray.Tests\DiagnosticsPageContractTests.cs:line 208
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+Failed!  - Failed:     2, Passed:  1449, Skipped:     0, Total:  1451, Duration: 20 s - OpenClaw.Tray.Tests.dll (net10.0)

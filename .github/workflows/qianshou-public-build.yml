@@ -1,0 +1,365 @@
+name: Build Qianshou OpenClaw
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: qianshou-windows-build
+  cancel-in-progress: true
+
+jobs:
+  build-x64:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        id: checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download verified source snapshot
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "qianshou-source.tgz"
+          Invoke-WebRequest `
+            -Uri "https://xz.178u.cn/build-temp/qianshou-build-source-56c40a75.tgz" `
+            -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          $expected = "56c40a754273a6ae72fc3b91096b4ba220f6e73fbe0da0f8d8242d1378a90542"
+          if ($actual -ne $expected) {
+            throw "Source archive checksum mismatch."
+          }
+          tar -xzf $archive -C $env:GITHUB_WORKSPACE
+          git config user.name "qianshou-build"
+          git config user.email "qianshou-build@users.noreply.github.com"
+          git add -A
+          git commit -m "build: verified source snapshot"
+
+      - name: Publish checkout progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage checkout
+
+      - name: Set up .NET 10
+        id: setup_dotnet
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Node.js
+        id: setup_node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Restore JavaScript dependency
+        id: restore_js
+        run: npm ci
+
+      - name: Restore .NET dependencies
+        id: restore_dotnet
+        run: dotnet restore
+
+      - name: Publish dependency progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage dependencies
+
+      - name: Run required repository build
+        id: build_repo
+        shell: pwsh
+        run: .\build.ps1 -Project All -Configuration Release
+
+      - name: Publish repository build progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage repository_build
+
+      - name: Run shared tests
+        id: test_shared
+        run: dotnet test .\tests\OpenClaw.Shared.Tests\OpenClaw.Shared.Tests.csproj --no-restore
+
+      - name: Run connection and enrollment tests
+        id: test_connection
+        run: dotnet test .\tests\OpenClaw.Connection.Tests\OpenClaw.Connection.Tests.csproj --no-restore
+
+      - name: Run personnel binding workflow tests
+        id: test_personnel_binding
+        working-directory: .\plugins\qianshou-personnel-binding
+        run: npm test
+
+      - name: Publish shared test progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage shared_tests
+
+      - name: Run tray tests
+        id: test_tray
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path .\Output | Out-Null
+          dotnet test .\tests\OpenClaw.Tray.Tests\OpenClaw.Tray.Tests.csproj --no-restore 2>&1 |
+            Tee-Object -FilePath .\Output\tray-tests.log
+          $testExitCode = $LASTEXITCODE
+
+          if ($testExitCode -ne 0) {
+            $diagnosticDir = Join-Path $env:RUNNER_TEMP "qianshou-build-diagnostics"
+            New-Item -ItemType Directory -Force -Path $diagnosticDir | Out-Null
+            Copy-Item .\Output\tray-tests.log $diagnosticDir
+
+            Push-Location $diagnosticDir
+            git init
+            git config user.name "qianshou-build"
+            git config user.email "qianshou-build@users.noreply.github.com"
+            git checkout --orphan build-diagnostics
+            git add tray-tests.log
+            git commit -m "diagnostics: tray tests $env:GITHUB_SHA"
+            git remote add origin "https://x-access-token:$env:GITHUB_TOKEN@github.com/$env:GITHUB_REPOSITORY.git"
+            git push --force origin HEAD:build-diagnostics
+            Pop-Location
+
+            exit $testExitCode
+          }
+
+      - name: Publish tray test progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage tray_tests
+
+      - name: Run setup-engine tests
+        id: test_setup
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path .\Output | Out-Null
+          dotnet test .\tests\OpenClaw.SetupEngine.Tests\OpenClaw.SetupEngine.Tests.csproj 2>&1 |
+            Tee-Object -FilePath .\Output\setup-tests.log
+          $testExitCode = $LASTEXITCODE
+
+          if ($testExitCode -ne 0) {
+            $diagnosticDir = Join-Path $env:RUNNER_TEMP "qianshou-setup-diagnostics"
+            New-Item -ItemType Directory -Force -Path $diagnosticDir | Out-Null
+            Copy-Item .\Output\setup-tests.log $diagnosticDir
+
+            Push-Location $diagnosticDir
+            git init
+            git config user.name "qianshou-build"
+            git config user.email "qianshou-build@users.noreply.github.com"
+            git checkout --orphan setup-diagnostics
+            git add setup-tests.log
+            git commit -m "diagnostics: setup tests $env:GITHUB_SHA"
+            git remote add origin "https://x-access-token:$env:GITHUB_TOKEN@github.com/$env:GITHUB_REPOSITORY.git"
+            git push --force origin HEAD:setup-diagnostics
+            Pop-Location
+
+            exit $testExitCode
+          }
+
+      - name: Publish setup test progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage setup_tests
+
+      - name: Install Inno Setup
+        id: setup_inno
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Install Simplified Chinese installer language
+        shell: pwsh
+        run: |
+          $languageDir = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\Languages"
+          New-Item -ItemType Directory -Force -Path $languageDir | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/cfdf48923178df4b4f040e038b423aa555a61ffc/Files/Languages/Unofficial/ChineseSimplified.isl" `
+            -OutFile (Join-Path $languageDir "ChineseSimplified.isl")
+
+      - name: Build unsigned x64 installer
+        id: build_installer
+        shell: pwsh
+        run: .\scripts\build-inno-local.ps1 -Arch x64 -Configuration Release -Version 0.6.12.2
+
+      - name: Publish installer build progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage installer_built
+
+      - name: Smoke-test silent installation
+        id: smoke_install
+        shell: pwsh
+        run: |
+          $installer = Resolve-Path .\Output\QianshouOpenClaw-Setup-x64.exe
+          $installDir = Join-Path $env:RUNNER_TEMP "QianshouAINode"
+          $process = Start-Process -FilePath $installer -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/TASKS=",
+            "/DIR=$installDir"
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Installer exited with code $($process.ExitCode)."
+          }
+
+          $tray = Join-Path $installDir "OpenClaw.Tray.WinUI.exe"
+          if (-not (Test-Path -LiteralPath $tray)) {
+            throw "Installed tray executable was not found at $tray."
+          }
+
+          $notice = Join-Path $installDir "NOTICE-QIANSHOU-AI.txt"
+          $license = Join-Path $installDir "LICENSE"
+          if (-not (Test-Path -LiteralPath $notice) -or -not (Test-Path -LiteralPath $license)) {
+            throw "Required license or distribution notice is missing."
+          }
+
+      - name: Publish smoke install progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage smoke_install
+
+      - name: Write checksum
+        id: checksum
+        shell: pwsh
+        run: |
+          $installer = Resolve-Path .\Output\QianshouOpenClaw-Setup-x64.exe
+          $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $installer
+          "$($hash.Hash.ToLowerInvariant())  QianshouOpenClaw-Setup-x64.exe" |
+            Set-Content -Encoding ascii .\Output\QianshouOpenClaw-SHA256SUMS.txt
+
+      - name: Upload installer
+        id: upload_artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: QianshouOpenClaw-Windows-x64
+          path: |
+            Output/QianshouOpenClaw-Setup-x64.exe
+            Output/QianshouOpenClaw-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish installer to private download branch
+        id: publish_installer
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $publishDir = Join-Path $env:RUNNER_TEMP "qianshou-windows-build"
+          New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
+          Copy-Item .\Output\QianshouOpenClaw-SHA256SUMS.txt $publishDir
+
+          $installer = Resolve-Path .\Output\QianshouOpenClaw-Setup-x64.exe
+          $inputStream = [System.IO.File]::OpenRead($installer)
+          try {
+            $buffer = New-Object byte[] (80MB)
+            $partNumber = 1
+            while (($bytesRead = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+              $partName = "QianshouOpenClaw-Setup-x64.exe.part{0:D3}" -f $partNumber
+              $partPath = Join-Path $publishDir $partName
+              $outputStream = [System.IO.File]::Create($partPath)
+              try {
+                $outputStream.Write($buffer, 0, $bytesRead)
+              } finally {
+                $outputStream.Dispose()
+              }
+              $partNumber++
+            }
+          } finally {
+            $inputStream.Dispose()
+          }
+
+          Push-Location $publishDir
+          git init
+          git config user.name "qianshou-build"
+          git config user.email "qianshou-build@users.noreply.github.com"
+          git checkout --orphan windows-build
+          git add QianshouOpenClaw-Setup-x64.exe.part* QianshouOpenClaw-SHA256SUMS.txt
+          git commit -m "build: Windows x64 $env:GITHUB_SHA"
+          git remote add origin "https://x-access-token:$env:GITHUB_TOKEN@github.com/$env:GITHUB_REPOSITORY.git"
+          git push --force origin HEAD:windows-build
+          Pop-Location
+
+      - name: Publish artifact progress
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .\scripts\publish-ci-progress.ps1 -Stage artifact_published
+
+      - name: Publish build status
+        if: always()
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUTCOME_SETUP_DOTNET: ${{ steps.setup_dotnet.outcome }}
+          OUTCOME_SETUP_NODE: ${{ steps.setup_node.outcome }}
+          OUTCOME_RESTORE_JS: ${{ steps.restore_js.outcome }}
+          OUTCOME_RESTORE_DOTNET: ${{ steps.restore_dotnet.outcome }}
+          OUTCOME_BUILD_REPO: ${{ steps.build_repo.outcome }}
+          OUTCOME_TEST_SHARED: ${{ steps.test_shared.outcome }}
+          OUTCOME_TEST_CONNECTION: ${{ steps.test_connection.outcome }}
+          OUTCOME_TEST_PERSONNEL_BINDING: ${{ steps.test_personnel_binding.outcome }}
+          OUTCOME_TEST_TRAY: ${{ steps.test_tray.outcome }}
+          OUTCOME_TEST_SETUP: ${{ steps.test_setup.outcome }}
+          OUTCOME_SETUP_INNO: ${{ steps.setup_inno.outcome }}
+          OUTCOME_BUILD_INSTALLER: ${{ steps.build_installer.outcome }}
+          OUTCOME_SMOKE_INSTALL: ${{ steps.smoke_install.outcome }}
+          OUTCOME_CHECKSUM: ${{ steps.checksum.outcome }}
+          OUTCOME_UPLOAD_ARTIFACT: ${{ steps.upload_artifact.outcome }}
+          OUTCOME_PUBLISH_INSTALLER: ${{ steps.publish_installer.outcome }}
+        run: |
+          $statusDir = Join-Path $env:RUNNER_TEMP "qianshou-build-status"
+          New-Item -ItemType Directory -Force -Path $statusDir | Out-Null
+          @"
+          commit=$env:GITHUB_SHA
+          run_id=$env:GITHUB_RUN_ID
+          job=$env:JOB_STATUS
+          checkout=$env:OUTCOME_CHECKOUT
+          setup_dotnet=$env:OUTCOME_SETUP_DOTNET
+          setup_node=$env:OUTCOME_SETUP_NODE
+          restore_js=$env:OUTCOME_RESTORE_JS
+          restore_dotnet=$env:OUTCOME_RESTORE_DOTNET
+          build_repo=$env:OUTCOME_BUILD_REPO
+          test_shared=$env:OUTCOME_TEST_SHARED
+          test_connection=$env:OUTCOME_TEST_CONNECTION
+          test_personnel_binding=$env:OUTCOME_TEST_PERSONNEL_BINDING
+          test_tray=$env:OUTCOME_TEST_TRAY
+          test_setup=$env:OUTCOME_TEST_SETUP
+          setup_inno=$env:OUTCOME_SETUP_INNO
+          build_installer=$env:OUTCOME_BUILD_INSTALLER
+          smoke_install=$env:OUTCOME_SMOKE_INSTALL
+          checksum=$env:OUTCOME_CHECKSUM
+          upload_artifact=$env:OUTCOME_UPLOAD_ARTIFACT
+          publish_installer=$env:OUTCOME_PUBLISH_INSTALLER
+          "@ | Set-Content -Encoding ascii (Join-Path $statusDir "status.txt")
+
+          Push-Location $statusDir
+          git init
+          git config user.name "qianshou-build"
+          git config user.email "qianshou-build@users.noreply.github.com"
+          git checkout --orphan build-status
+          git add status.txt
+          git commit -m "status: $env:JOB_STATUS $env:GITHUB_SHA"
+          git remote add origin "https://x-access-token:$env:GITHUB_TOKEN@github.com/$env:GITHUB_REPOSITORY.git"
+          git push --force origin HEAD:build-status
+          Pop-Location

@@ -1,0 +1,153 @@
+name: Build Qianshou Final First Installer
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qianshou-final-first-installer
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    env:
+      SOURCE_URL: https://xz.178u.cn/build-temp/qianshou-build-source-56c40a75.tgz
+      SOURCE_SHA256: 56c40a754273a6ae72fc3b91096b4ba220f6e73fbe0da0f8d8242d1378a90542
+      SIGNED_INSTALLER_URL: https://xz.178u.cn/download/QianshouOpenClaw-Setup-x64.exe
+      SIGNED_INSTALLER_SHA256: e6ae3345eecf0fea4cd60a2583b18a4113cc2465f7f6656c13542ccea9ff3735
+      SIGNER_THUMBPRINT: 00D4DA0FA02E12001900DCCD4B938F68A5613DE5
+
+    steps:
+      - name: Check out wrapper workflow
+        uses: actions/checkout@v7
+
+      - name: Download verified packaging source
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "qianshou-source.tgz"
+          Invoke-WebRequest -Uri $env:SOURCE_URL -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:SOURCE_SHA256) {
+            throw "Source archive checksum mismatch: $actual"
+          }
+          tar -xzf $archive -C $env:GITHUB_WORKSPACE
+
+      - name: Download and verify signed core installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .\packaging\first-install\payload, .\packaging\first-install\Output | Out-Null
+          $installer = Join-Path $PWD "packaging\first-install\payload\QianshouOpenClaw-Setup-x64.exe"
+          Invoke-WebRequest -Uri $env:SIGNED_INSTALLER_URL -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+          if ($actual -ne $env:SIGNED_INSTALLER_SHA256) {
+            throw "Signed installer hash mismatch: $actual"
+          }
+
+      - name: Verify Authenticode signer and timestamp
+        shell: pwsh
+        run: |
+          $installer = Join-Path $PWD "packaging\first-install\payload\QianshouOpenClaw-Setup-x64.exe"
+          $certificatePath = Join-Path $PWD "packaging\first-install\certs\Qianshou-Internal-Publisher.cer"
+          $publishedCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificatePath)
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($publishedCertificate.Thumbprint -ne $env:SIGNER_THUMBPRINT) {
+            throw "Published certificate thumbprint mismatch."
+          }
+          if (-not $signature.SignerCertificate) {
+            throw "The core installer has no Authenticode signer."
+          }
+          if ($signature.SignerCertificate.Thumbprint -ne $env:SIGNER_THUMBPRINT) {
+            throw "Unexpected signer: $($signature.SignerCertificate.Thumbprint)"
+          }
+          if (-not $signature.TimeStamperCertificate) {
+            throw "The core installer has no trusted timestamp."
+          }
+          if ($signature.Status -in @("HashMismatch", "NotSigned", "NotSupported")) {
+            throw "Invalid Authenticode envelope: $($signature.Status) - $($signature.StatusMessage)"
+          }
+
+      - name: Install Inno Setup and Simplified Chinese language
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          $languageDir = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\Languages"
+          New-Item -ItemType Directory -Force -Path $languageDir | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/cfdf48923178df4b4f040e038b423aa555a61ffc/Files/Languages/Unofficial/ChineseSimplified.isl" `
+            -OutFile (Join-Path $languageDir "ChineseSimplified.isl")
+
+      - name: Build one-click first installer
+        shell: pwsh
+        working-directory: .\packaging\first-install
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" .\installer-first-run.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Building the first installer failed."
+          }
+
+      - name: Smoke-test complete first-install flow
+        shell: pwsh
+        working-directory: .\packaging\first-install
+        run: |
+          $firstInstaller = Resolve-Path .\Output\QianshouOpenClaw-FirstInstall-x64.exe
+          $process = Start-Process -FilePath $firstInstaller -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART"
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "First installer exited with code $($process.ExitCode)."
+          }
+          $installedTray = Join-Path $env:LOCALAPPDATA "QianshouAINode\OpenClaw.Tray.WinUI.exe"
+          if (-not (Test-Path -LiteralPath $installedTray)) {
+            throw "Installed tray application was not found."
+          }
+          $root = Get-ChildItem Cert:\LocalMachine\Root | Where-Object Thumbprint -eq "C96262AE2D3D99B2F322FFF52C1C645B9482BD98"
+          $publisher = Get-ChildItem Cert:\LocalMachine\TrustedPublisher | Where-Object Thumbprint -eq $env:SIGNER_THUMBPRINT
+          if (-not $root -or -not $publisher) {
+            throw "Internal trust certificates were not installed."
+          }
+
+      - name: Prepare and verify final artifact
+        shell: pwsh
+        working-directory: .\packaging\first-install
+        run: |
+          Copy-Item .\payload\QianshouOpenClaw-Setup-x64.exe .\Output\QianshouOpenClaw-Setup-x64.exe
+          Copy-Item .\certs\Qianshou-Internal-Root.cer .\Output\Qianshou-Internal-Root.cer
+          Copy-Item .\certs\Qianshou-Internal-Publisher.cer .\Output\Qianshou-Internal-Publisher.cer
+          $files = @(
+            "QianshouOpenClaw-FirstInstall-x64.exe",
+            "QianshouOpenClaw-Setup-x64.exe",
+            "Qianshou-Internal-Root.cer",
+            "Qianshou-Internal-Publisher.cer"
+          )
+          $lines = foreach ($name in $files) {
+            $path = Join-Path $PWD "Output\$name"
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing output: $name"
+            }
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            "$hash  $name"
+          }
+          $lines | Set-Content -Encoding ascii .\Output\QianshouOpenClaw-Internal-SHA256SUMS.txt
+
+      - name: Upload final internal installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: QianshouOpenClaw-Internal-Windows-x64
+          path: |
+            packaging/first-install/Output/QianshouOpenClaw-FirstInstall-x64.exe
+            packaging/first-install/Output/QianshouOpenClaw-Setup-x64.exe
+            packaging/first-install/Output/Qianshou-Internal-Root.cer
+            packaging/first-install/Output/Qianshou-Internal-Publisher.cer
+            packaging/first-install/Output/QianshouOpenClaw-Internal-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 3

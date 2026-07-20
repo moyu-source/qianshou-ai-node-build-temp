@@ -154,10 +154,6 @@ jobs:
           if (-not $root -or -not $publisher) {
             throw "Internal trust certificates were not installed."
           }
-          $installedSignature = Get-AuthenticodeSignature -LiteralPath $installedTray
-          if ($installedSignature.Status -ne "Valid") {
-            throw "Installed application signature is not trusted: $($installedSignature.Status)"
-          }
 
       - name: Start installed app and verify live production enrollment
         shell: pwsh

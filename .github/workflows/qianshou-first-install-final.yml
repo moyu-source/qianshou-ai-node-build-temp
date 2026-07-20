@@ -161,6 +161,7 @@ jobs:
           $dataDir = Join-Path $env:RUNNER_TEMP "qianshou-live"
           New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
           $env:OPENCLAW_TRAY_DATA_DIR = $dataDir
+          $env:OPENCLAW_TRAY_TRACE = "1"
           $tray = Join-Path $env:LOCALAPPDATA "QianshouAINode\OpenClaw.Tray.WinUI.exe"
           $trayProcess = Start-Process -FilePath $tray -PassThru
           $statePath = Join-Path $dataDir "qianshou-enrollment.json"
@@ -195,6 +196,24 @@ jobs:
           }
           if (-not $settings.enableNodeMode) {
             throw "Managed node mode was not enabled."
+          }
+          Start-Sleep -Seconds 20
+          $logPath = Join-Path $dataDir "openclaw-tray.log"
+          if (-not (Test-Path -LiteralPath $logPath)) {
+            throw "The installed app did not create its connection log."
+          }
+          $log = Get-Content -Raw -LiteralPath $logPath
+          $checks = [ordered]@{
+            enrollment_error = $log -match '\[QianshouEnrollment\] enrollment failed'
+            operator_handshake = $log -match 'Handshake succeeded'
+            pairing_required = $log -match 'Pairing required|PairingRequired'
+            node_connector_started = $log -match '\[NodeConnector\] Connecting'
+            node_connected = $log -match 'Node status: Connected'
+            authentication_failed = $log -match 'Authentication failed|AUTH_'
+            transport_failed = $log -match 'WebSocketError|Transport error|connect failed'
+          }
+          foreach ($entry in $checks.GetEnumerator()) {
+            Write-Host "QIANSHOU_CONNECTION_CHECK $($entry.Key)=$($entry.Value)"
           }
           Write-Host "QIANSHOU_LIVE_E2E_READY enrollmentId=$($state.enrollmentId) personnel=$($state.personnelNumber)"
           Write-Host "Keeping the temporary Windows node online for remote operation checks."

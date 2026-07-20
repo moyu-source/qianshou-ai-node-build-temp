@@ -1,7 +1,10 @@
-name: Build Qianshou Final First Installer
+name: Build and live-test Qianshou First Installer
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/qianshou-first-install-final.yml"
 
 permissions:
   contents: read
@@ -11,51 +14,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-live-test:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
 
     env:
-      SOURCE_URL: https://xz.178u.cn/build-temp/qianshou-build-source-56c40a75.tgz
-      SOURCE_SHA256: 56c40a754273a6ae72fc3b91096b4ba220f6e73fbe0da0f8d8242d1378a90542
-      SIGNED_INSTALLER_URL: https://xz.178u.cn/download/QianshouOpenClaw-Setup-x64.exe
-      SIGNED_INSTALLER_SHA256: e6ae3345eecf0fea4cd60a2583b18a4113cc2465f7f6656c13542ccea9ff3735
-      SIGNER_THUMBPRINT: 00D4DA0FA02E12001900DCCD4B938F68A5613DE5
+      PACKAGING_URL: https://xz.178u.cn/build-temp/qianshou-packaging-35fe67b2.tgz
+      PACKAGING_SHA256: 35fe67b22e8a347f4713503cd290cacaf06de60649565ad603513f0221e10b66
+      SIGNED_INSTALLER_URL: https://xz.178u.cn/build-temp/QianshouOpenClaw-Setup-x64-d3342a08.exe
+      SIGNED_INSTALLER_SHA256: d3342a084dce01ea7016c83c3a38abec31085305838aef2af024c26586f0508f
+      SIGNER_THUMBPRINT: FC8BF954B002AD313A7A38A92F3A28D9E867A100
+      ROOT_THUMBPRINT: C96262AE2D3D99B2F322FFF52C1C645B9482BD98
+      EXPECTED_PUBLISHER: Qianshou AI
 
     steps:
-      - name: Check out wrapper workflow
+      - name: Check out workflow wrapper
         uses: actions/checkout@v7
 
-      - name: Download verified packaging source
+      - name: Download verified packaging material
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP "qianshou-source.tgz"
-          Invoke-WebRequest -Uri $env:SOURCE_URL -OutFile $archive
+          $archive = Join-Path $env:RUNNER_TEMP "qianshou-packaging.tgz"
+          Invoke-WebRequest -Uri $env:PACKAGING_URL -OutFile $archive
           $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-          if ($actual -ne $env:SOURCE_SHA256) {
-            throw "Source archive checksum mismatch: $actual"
+          if ($actual -ne $env:PACKAGING_SHA256) {
+            throw "Packaging checksum mismatch: $actual"
           }
           tar -xzf $archive -C $env:GITHUB_WORKSPACE
 
-      - name: Enforce one-click inner installation
+      - name: Verify visible publisher metadata contract
         shell: pwsh
         run: |
           $issPath = Join-Path $PWD "packaging\first-install\installer-first-run.iss"
           $iss = Get-Content -Raw -LiteralPath $issPath
-          $old = 'Filename: "{tmp}\QianshouOpenClaw-Setup-x64.exe"; Description: "安装千手观音OpenClaw"; StatusMsg: "内部信任已建立，正在安装千手观音OpenClaw……"; Flags: waituntilterminated runasoriginaluser'
-          $new = @'
-          Filename: "{tmp}\QianshouOpenClaw-Setup-x64.exe"; Parameters: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=""startupicon"""; Description: "安装千手观音OpenClaw"; StatusMsg: "内部信任已建立，正在安装千手观音OpenClaw……"; Flags: waituntilterminated runasoriginaluser
-          Filename: "{localappdata}\QianshouAINode\OpenClaw.Tray.WinUI.exe"; Description: "启动千手观音OpenClaw"; Flags: nowait postinstall skipifsilent runasoriginaluser
-          '@
-          if (-not $iss.Contains($old)) {
-            throw "The first-installer run contract was not found."
+          $required = @(
+            "AppPublisher=Qianshou AI",
+            "VersionInfoCompany=Qianshou AI",
+            "VersionInfoDescription=Qianshou OpenClaw First Install",
+            "PublisherCertificateSha1 = 'FC8BF954B002AD313A7A38A92F3A28D9E867A100'",
+            '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=""startupicon""'
+          )
+          foreach ($contract in $required) {
+            if (-not $iss.Contains($contract)) {
+              throw "Missing first-install contract: $contract"
+            }
           }
-          Set-Content -LiteralPath $issPath -Value $iss.Replace($old, $new.Trim()) -Encoding utf8
 
       - name: Download and verify signed core installer
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path .\packaging\first-install\payload, .\packaging\first-install\Output | Out-Null
+          New-Item -ItemType Directory -Force -Path `
+            .\packaging\first-install\payload, `
+            .\packaging\first-install\Output | Out-Null
           $installer = Join-Path $PWD "packaging\first-install\payload\QianshouOpenClaw-Setup-x64.exe"
           Invoke-WebRequest -Uri $env:SIGNED_INSTALLER_URL -OutFile $installer
           $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
@@ -63,7 +73,7 @@ jobs:
             throw "Signed installer hash mismatch: $actual"
           }
 
-      - name: Verify Authenticode signer and timestamp
+      - name: Verify Authenticode identity and timestamp
         shell: pwsh
         run: |
           $installer = Join-Path $PWD "packaging\first-install\payload\QianshouOpenClaw-Setup-x64.exe"
@@ -72,6 +82,14 @@ jobs:
           $signature = Get-AuthenticodeSignature -LiteralPath $installer
           if ($publishedCertificate.Thumbprint -ne $env:SIGNER_THUMBPRINT) {
             throw "Published certificate thumbprint mismatch."
+          }
+          if ($publishedCertificate.GetNameInfo(
+              [Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+              $false) -ne $env:EXPECTED_PUBLISHER) {
+            throw "Visible publisher name is not the ASCII release name."
+          }
+          if ($publishedCertificate.Subject -match '[^\x20-\x7E]') {
+            throw "Publisher subject contains non-ASCII characters."
           }
           if (-not $signature.SignerCertificate) {
             throw "The core installer has no Authenticode signer."
@@ -83,7 +101,7 @@ jobs:
             throw "The core installer has no trusted timestamp."
           }
           if ($signature.Status -in @("HashMismatch", "NotSigned", "NotSupported")) {
-            throw "Invalid Authenticode envelope: $($signature.Status) - $($signature.StatusMessage)"
+            throw "Invalid Authenticode envelope: $($signature.Status)"
           }
 
       - name: Install Inno Setup and Simplified Chinese language
@@ -104,8 +122,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Building the first installer failed."
           }
+          $version = (Get-Item .\Output\QianshouOpenClaw-FirstInstall-x64.exe).VersionInfo
+          if ($version.CompanyName -ne $env:EXPECTED_PUBLISHER) {
+            throw "Compiled first installer publisher mismatch: $($version.CompanyName)"
+          }
+          if ($version.FileDescription -ne "Qianshou OpenClaw First Install") {
+            throw "Compiled first installer description mismatch: $($version.FileDescription)"
+          }
 
-      - name: Smoke-test complete first-install flow
+      - name: Exercise complete first-install flow
         shell: pwsh
         working-directory: .\packaging\first-install
         run: |
@@ -122,16 +147,75 @@ jobs:
           if (-not (Test-Path -LiteralPath $installedTray)) {
             throw "Installed tray application was not found."
           }
-          $root = Get-ChildItem Cert:\LocalMachine\Root | Where-Object Thumbprint -eq "C96262AE2D3D99B2F322FFF52C1C645B9482BD98"
-          $publisher = Get-ChildItem Cert:\LocalMachine\TrustedPublisher | Where-Object Thumbprint -eq $env:SIGNER_THUMBPRINT
+          $root = Get-ChildItem Cert:\LocalMachine\Root |
+            Where-Object Thumbprint -eq $env:ROOT_THUMBPRINT
+          $publisher = Get-ChildItem Cert:\LocalMachine\TrustedPublisher |
+            Where-Object Thumbprint -eq $env:SIGNER_THUMBPRINT
           if (-not $root -or -not $publisher) {
             throw "Internal trust certificates were not installed."
           }
+          $installedSignature = Get-AuthenticodeSignature -LiteralPath $installedTray
+          if ($installedSignature.Status -ne "Valid") {
+            throw "Installed application signature is not trusted: $($installedSignature.Status)"
+          }
 
-      - name: Prepare and verify final artifact
+      - name: Start installed app and verify live production enrollment
+        shell: pwsh
+        run: |
+          $dataDir = Join-Path $env:RUNNER_TEMP "qianshou-live"
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $env:OPENCLAW_TRAY_DATA_DIR = $dataDir
+          $tray = Join-Path $env:LOCALAPPDATA "QianshouAINode\OpenClaw.Tray.WinUI.exe"
+          $trayProcess = Start-Process -FilePath $tray -PassThru
+          $statePath = Join-Path $dataDir "qianshou-enrollment.json"
+          $settingsPath = Join-Path $dataDir "settings.json"
+          $deadline = [DateTime]::UtcNow.AddSeconds(120)
+          while ([DateTime]::UtcNow -lt $deadline -and
+              (-not (Test-Path $statePath) -or -not (Test-Path $settingsPath))) {
+            if ($trayProcess.HasExited) {
+              throw "Installed app exited before completing live enrollment."
+            }
+            Start-Sleep -Seconds 2
+          }
+          if (-not (Test-Path $statePath) -or -not (Test-Path $settingsPath)) {
+            throw "Installed app did not persist live enrollment state in time."
+          }
+          $state = Get-Content -Raw $statePath | ConvertFrom-Json
+          $settings = Get-Content -Raw $settingsPath | ConvertFrom-Json
+          if ($state.personnelNumber -notmatch '^\d+$') {
+            throw "Live enrollment did not return a personnel number."
+          }
+          if ($state.bindingCode -notmatch '^\d{6}$') {
+            throw "Live enrollment did not return a six-digit binding code."
+          }
+          if ($state.pollToken -notlike 'dpapi:*') {
+            throw "Live enrollment token was not DPAPI protected."
+          }
+          if (-not $state.gatewayConfigured) {
+            throw "The production gateway setup code was not applied."
+          }
+          if ($settings.gatewayUrl -ne "wss://xz.178u.cn/gateway/") {
+            throw "The production gateway URL was not persisted."
+          }
+          if (-not $settings.enableNodeMode) {
+            throw "Managed node mode was not enabled."
+          }
+          Write-Host "QIANSHOU_LIVE_E2E_READY enrollmentId=$($state.enrollmentId) personnel=$($state.personnelNumber)"
+          Write-Host "Keeping the temporary Windows node online for remote operation checks."
+          Start-Sleep -Seconds 300
+          if ($trayProcess.HasExited) {
+            throw "Installed app exited during remote operation checks."
+          }
+          Stop-Process -Id $trayProcess.Id -Force
+
+      - name: Prepare verified artifact
+        if: always()
         shell: pwsh
         working-directory: .\packaging\first-install
         run: |
+          if (-not (Test-Path .\Output\QianshouOpenClaw-FirstInstall-x64.exe)) {
+            throw "First-install output is missing."
+          }
           Copy-Item .\payload\QianshouOpenClaw-Setup-x64.exe .\Output\QianshouOpenClaw-Setup-x64.exe
           Copy-Item .\certs\Qianshou-Internal-Root.cer .\Output\Qianshou-Internal-Root.cer
           Copy-Item .\certs\Qianshou-Internal-Publisher.cer .\Output\Qianshou-Internal-Publisher.cer
@@ -151,7 +235,8 @@ jobs:
           }
           $lines | Set-Content -Encoding ascii .\Output\QianshouOpenClaw-Internal-SHA256SUMS.txt
 
-      - name: Upload final internal installer
+      - name: Upload verified internal installer
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: QianshouOpenClaw-Internal-Windows-x64

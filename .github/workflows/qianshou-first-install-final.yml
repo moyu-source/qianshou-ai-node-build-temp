@@ -210,6 +210,10 @@ jobs:
             node_connector_started = $log -match '\[NodeConnector\] Connecting'
             node_connected = $log -match 'Node status: Connected'
             authentication_failed = $log -match 'Authentication failed|AUTH_'
+            bootstrap_invalid_or_expired = $log -match 'bootstrap token invalid or expired'
+            device_token_mismatch = $log -match 'device token mismatch|AUTH_DEVICE_TOKEN_MISMATCH'
+            signature_rejected = $log -match 'signature.*(invalid|rejected)|invalid.*signature'
+            no_credential = $log -match 'No credential available'
             transport_failed = $log -match 'WebSocketError|Transport error|connect failed'
           }
           foreach ($entry in $checks.GetEnumerator()) {

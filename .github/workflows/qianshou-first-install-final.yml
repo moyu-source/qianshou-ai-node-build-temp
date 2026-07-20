@@ -123,10 +123,10 @@ jobs:
             throw "Building the first installer failed."
           }
           $version = (Get-Item .\Output\QianshouOpenClaw-FirstInstall-x64.exe).VersionInfo
-          if ($version.CompanyName -ne $env:EXPECTED_PUBLISHER) {
+          if ($version.CompanyName.Trim() -ne $env:EXPECTED_PUBLISHER) {
             throw "Compiled first installer publisher mismatch: $($version.CompanyName)"
           }
-          if ($version.FileDescription -ne "Qianshou OpenClaw First Install") {
+          if ($version.FileDescription.Trim() -ne "Qianshou OpenClaw First Install") {
             throw "Compiled first installer description mismatch: $($version.FileDescription)"
           }
 
